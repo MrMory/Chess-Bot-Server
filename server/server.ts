@@ -56,12 +56,13 @@ const io = new Server(server, {cors: {origin: "*"}});
 // Serve the React static files after build
 app.use(express.static("../client/build"));
 
-io.on("connection", (socket: any) => {
+io.on("connection", async (socket: any) => {
   console.log('Someone connected');
   socket.on('REGISTER_BOT', (data) => {
     const botIndex = bots.findIndex(bot => bot.customBotId === data.customBotId);
     if(botIndex > -1){
-      bots[botIndex].clientId = data.clientId;
+      console.log('ClientId:', socket.id)
+      bots[botIndex].clientId = socket.id;
     }
     else {
       let botInfo = {
