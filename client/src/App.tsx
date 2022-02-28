@@ -39,6 +39,8 @@ const App = () => {
   const [ whiteTime, setWhiteTime ] = useState<number>(5*60);
   const [ blackTime, setBlackTime ] = useState<number>(5*60);
   const [ gameOverState, setGameOverState ] = useState();
+
+  // THIS IS THE MOST AWESOME COMMENT 1337!!
   
   const socket = useRef<Socket>();
 
@@ -48,8 +50,10 @@ const App = () => {
       if(process.env.NODE_ENV !== 'production'){
         return;
       }
-      const key = window.prompt('Please fill in you access key');
+      const cachedKey = window.localStorage.getItem('dashboardKey');
+      const key = cachedKey || window.prompt('Please fill in you access key');
       socket.current?.emit('REGISTER_DASHBOARD', key);
+      window.localStorage.setItem('dashboardKey', key || '');
     });
     socket.current.on("NEW_BOARD_STATE", (data: NewBoardStateData) => {
       setGame((g) => {
