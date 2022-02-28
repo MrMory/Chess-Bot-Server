@@ -43,7 +43,7 @@ const App = () => {
   const socket = useRef<Socket>();
 
   useEffect(() => {
-    socket.current = io(ENDPOINT);
+    socket.current = io(process.env.NODE_ENV === 'production' ? window.location.host : ENDPOINT);
     socket.current.on('connect', () => {
       if(process.env.NODE_ENV !== 'production'){
         return;
