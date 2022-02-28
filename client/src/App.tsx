@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import './App.css';
 import { ChessInstance, Move, Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useState } from 'react';
-import { io } from 'socket.io-client';
+import { io, Socket } from 'socket.io-client';
 import { Box, Button, Container, FormControl, Grid, InputLabel, List, ListItem, ListItemIcon, ListItemText, ListSubheader, MenuItem, Paper, Select, SelectChangeEvent, Typography } from '@mui/material';
 import Countdown from './components/countdown';
 import { Link, LinkOff } from '@mui/icons-material';
@@ -38,12 +38,20 @@ const App = () => {
   const [ currentTurn, setCurrentTurn ] = useState<'w' | 'b' | 'NONE'>();
   const [ whiteTime, setWhiteTime ] = useState<number>(5*60);
   const [ blackTime, setBlackTime ] = useState<number>(5*60);
+  const [ gameOverState, setGameOverState ] = useState();
+  
+  const socket = useRef<Socket>();
 
   useEffect(() => {
-    const socket = io(ENDPOINT);
-    socket.emit("REQUEST_BOT_LIST");
-    socket.onAny(console.log);
-    socket.on("NEW_BOARD_STATE", (data: NewBoardStateData) => {
+    socket.current = io(ENDPOINT);
+    socket.current.on('connect', () => {
+      if(process.env.NODE_ENV !== 'production'){
+        return;
+      }
+      const key = window.prompt('Please fill in you access key');
+      socket.current?.emit('REGISTER_DASHBOARD', key);
+    });
+    socket.current.on("NEW_BOARD_STATE", (data: NewBoardStateData) => {
       setGame((g) => {
         const update = { ...g };
         update.load(data.boardState);
@@ -53,31 +61,38 @@ const App = () => {
         return update;
       })
     });
-    if(newMove !== null && gameState === 'PLAYING' && (white === 'player' || black === 'player')){
-      socket.emit("PLAYER_MOVE", newMove);
-    }
-    socket.on("CURRENT_BOT_LIST", (data: ConnectedBot[]) => {
+    socket.current.on("CURRENT_BOT_LIST", (data: ConnectedBot[]) => {
       console.log('Bots:', data);
       setCurrentBotList(data);
     });
-    socket.on("GAME_STARTED", () => {
+    socket.current.on("GAME_STARTED", () => {
       setGameState('PLAYING');
     });
-    socket.on("GAME_OVER", (data) => {
+    socket.current.on("GAME_OVER", (data) => {
       setGameState('GAME_OVER');
     });
+    return () => { socket.current?.disconnect() };
+  }, [])
+
+  useEffect(() => {
+    if(!socket.current){
+      
+    }
+    socket.current?.emit("REQUEST_BOT_LIST");
+    if(newMove !== null && gameState === 'PLAYING' && (white === 'player' || black === 'player')){
+      socket.current?.emit("PLAYER_MOVE", newMove);
+    }
     if(gameState === 'START'){
-      socket.emit("GAME_START", ({white: white, black: black}));
+      socket.current?.emit("GAME_START", ({white: white, black: black}));
       setCurrentTurn('w');
     }
     if(gameState === 'STOP'){
-      socket.emit("GAME_STOP");
+      socket.current?.emit("GAME_STOP");
       setCurrentTurn('NONE');
     }
     if(gameState === 'RESET'){
-      socket.emit("GAME_RESET");
+      socket.current?.emit("GAME_RESET");
     }
-    return () => { socket.disconnect() };
   }, [black, gameState, white, newMove]);
 
   const onDrop = useCallback((sourceSquare: Square, targetSquare: Square) => {

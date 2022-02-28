@@ -19,6 +19,7 @@ interface ConnectedBot {
 }
 
 let bots: ConnectedBot[] = [];
+let superUsers: Set<String> = new Set();
 
 interface ICurrentGame {
   state: 'INPROGRESS' | 'PAUSED' | 'STOPPED',
@@ -59,7 +60,7 @@ const io = new Server(server, {cors: {origin: "*"}});
 // Serve the React static files after build
 app.use(express.static("../client/build"));
 
-io.on("connection", async (socket: any) => {
+io.on("connection", async (socket) => {
   console.log('Someone connected');
   socket.on('REGISTER_BOT', (data) => {
     const botIndex = bots.findIndex(bot => bot.customBotId === data.customBotId);
@@ -79,6 +80,17 @@ io.on("connection", async (socket: any) => {
     console.log('BotList:', bots);
     io.emit("CURRENT_BOT_LIST", bots);
   });
+
+  socket.on('REGISTER_DASHBOARD', (data) => {
+    console.log('Data register dashboard', data, typeof data);
+    console.log('DASHBOARD_KEY', process.env.DASHBOARD_KEY, typeof process.env.DASHBOARD_KEY);
+    const dashboardKey = process.env.DASHBOARD_KEY;
+    if(data !== dashboardKey){
+      console.log("WRONG!");
+      return;
+    }
+    superUsers.add(socket.id);
+  })
 
   socket.on('disconnect', (data) => {
     for( var i=0, len=bots.length; i<len; ++i ){
@@ -127,6 +139,12 @@ io.on("connection", async (socket: any) => {
     black: string,
   }
   socket.on("GAME_START", (data: GameStartData) => {
+    if(process.env.NODE_ENV === 'production' && !superUsers.has(socket.id)){
+      console.log('something went wrong :(');
+      console.log('Super users', superUsers);
+      console.log('SocketID', socket.id);
+      return;
+    }
     const { white, black } = data;
     currentGame = {
       state: 'INPROGRESS',
