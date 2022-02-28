@@ -13,7 +13,7 @@ const Chess: ChessInstance = new ChessReq();
 
 const ENDPOINT = "http://localhost:5001";
 
-type GAMESTATE = 'START' | 'STOP' | 'PLAYING' | 'RESET';
+type GAMESTATE = 'START' | 'STOP' | 'PLAYING' | 'RESET' | 'GAME_OVER';
 
 interface ConnectedBot {
   customBotId: string,
@@ -62,7 +62,10 @@ const App = () => {
     });
     socket.on("GAME_STARTED", () => {
       setGameState('PLAYING');
-    })
+    });
+    socket.on("GAME_OVER", (data) => {
+      setGameState('GAME_OVER');
+    });
     if(gameState === 'START'){
       socket.emit("GAME_START", ({white: white, black: black}));
       setCurrentTurn('w');
@@ -73,8 +76,6 @@ const App = () => {
     }
     if(gameState === 'RESET'){
       socket.emit("GAME_RESET");
-      setWhiteTime(5*60);
-      setBlackTime(5*60);
     }
     return () => { socket.disconnect() };
   }, [black, gameState, white, newMove]);

@@ -5,6 +5,10 @@ import cors from 'cors';
 import EloRank from 'elo-rank';
 import { Move, ShortMove, ChessInstance, Chess } from 'chess.js';
 
+const waitTime = 2000; // server wait time in miliseconds
+const extraMoveTime = 3; // extra time in seconds
+
+
 // const Chess = require('chess.js').Chess;
 const chess: ChessInstance = new Chess();
 
@@ -15,7 +19,6 @@ interface ConnectedBot {
 }
 
 let bots: ConnectedBot[] = [];
-let waitTime = 100;
 
 interface ICurrentGame {
   state: 'INPROGRESS' | 'PAUSED' | 'STOPPED',
@@ -171,14 +174,14 @@ const safeGameMutatue = (move: Move | ShortMove | null) => {
     const currentTime = new Date();
     const timeSpentByWhite = Math.round((currentTime.getTime() - currentGame.whiteTurnStartTime.getTime()) / 1000);
     const currentTimeWhite = currentGame.timeLeftWhite;
-    currentGame.timeLeftWhite = currentTimeWhite - timeSpentByWhite;
+    currentGame.timeLeftWhite = currentTimeWhite - timeSpentByWhite + extraMoveTime;
     currentGame.blackTurnStartTime = currentTime;
   }
   if(chess.turn() === 'b'){
     const currentTime = new Date();
     const timeSpentByBlack = Math.round((currentTime.getTime() - currentGame.blackTurnStartTime.getTime()) / 1000);
     const currentTimeBlack = currentGame.timeLeftBlack;
-    currentGame.timeLeftBlack = currentTimeBlack - timeSpentByBlack;
+    currentGame.timeLeftBlack = currentTimeBlack - timeSpentByBlack + extraMoveTime;
     currentGame.whiteTurnStartTime = currentTime;
   }
   chess.move(move);
@@ -205,17 +208,28 @@ const nextTurn = () => {
     if(chess.in_checkmate()){
       (turnColor === 'w' ? currentGame.winState = 'BLACK' : currentGame.winState = 'WHITE');
     }
+    let updatedElo;
     if(currentGame.white !== 'player' && currentGame.black !== 'player'){
       const whiteBotIndex = bots.findIndex(bot => bot.customBotId === currentGame.white);
       const blackBotIndex = bots.findIndex(bot => bot.customBotId === currentGame.black);
       const expectedScoreWhite = elo.getExpected(bots[whiteBotIndex].elo, bots[blackBotIndex].elo);
       const expectedScoreBlack = elo.getExpected(bots[blackBotIndex].elo, bots[whiteBotIndex].elo);
+      const currentEloWhite = bots[whiteBotIndex].elo;
       const whiteWinFactor = (currentGame.winState === 'WHITE' ? 1 : currentGame.winState === 'DRAW' ? 0.5 : 0);
-      bots[whiteBotIndex].elo = elo.updateRating(expectedScoreWhite, whiteWinFactor, bots[whiteBotIndex].elo);
+      const newWhiteElo = elo.updateRating(expectedScoreWhite, whiteWinFactor, bots[whiteBotIndex].elo)
+      bots[whiteBotIndex].elo = newWhiteElo;
+      const currentEloBlack = bots[blackBotIndex].elo;
       const blackWinFactor = (currentGame.winState === 'BLACK' ? 1 : currentGame.winState === 'DRAW' ? 0.5 : 0);
-      bots[blackBotIndex].elo = elo.updateRating(expectedScoreBlack, blackWinFactor, bots[blackBotIndex].elo);
+      const newBlackElo = elo.updateRating(expectedScoreBlack, blackWinFactor, bots[blackBotIndex].elo);
+      bots[blackBotIndex].elo = newBlackElo;
+      updatedElo = {
+        currentEloWhite: currentEloWhite,
+        currentEloBlack: currentEloBlack,
+        eloPointsWhite: newWhiteElo - currentEloWhite,
+        eloPointsBlack: newBlackElo - currentEloBlack,
+      }
     }
-    io.emit("GAME_OVER", currentGame);
+    io.emit("GAME_OVER", {currentGame: currentGame, updatedElo: updatedElo});
     io.emit("CURRENT_BOT_LIST", bots);
     return;
   }

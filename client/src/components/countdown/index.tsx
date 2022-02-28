@@ -27,7 +27,7 @@ function Countdown({ time, isCounting }: CountdownProps) {
 
   useEffect(() => {
       setCountState(time);
-  }, [time, setCountState]);
+  }, [time, isCounting, setCountState]);
 
   return (
       <div>
