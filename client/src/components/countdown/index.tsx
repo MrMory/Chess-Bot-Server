@@ -1,14 +1,25 @@
 import { useEffect, useState } from "react";
+import { Socket } from "socket.io-client";
+import { DefaultEventsMap } from "socket.io/dist/typed-events";
 
 interface CountdownProps {
   // Time in seconds
   time: number;
   isCounting: boolean;
+  socket: React.MutableRefObject<Socket<DefaultEventsMap, DefaultEventsMap> | undefined>;
+  color: 'WHITE' | 'BLACK';
+
 }
 
-function Countdown({ time, isCounting }: CountdownProps) {
+function Countdown(props: CountdownProps) {
+  const { time, isCounting, socket, color } = props;
   const [countState, setCountState] = useState(time);
-  console.log('Time: ', time);
+
+  useEffect(() => {
+    if(countState === 0){
+      socket.current?.emit("TIMEDOUT", color);
+    }
+  }, [color, countState, socket]);
 
   useEffect(() => {
       const handler = () => {

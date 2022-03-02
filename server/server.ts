@@ -1,12 +1,13 @@
 import express from "express";
 import path from "path";
-import { Server } from 'socket.io';
+import { Server, Socket } from 'socket.io';
 import cors from 'cors';
 import EloRank from 'elo-rank';
 import { Move, ShortMove, ChessInstance, Chess } from 'chess.js';
 
-const waitTime = 2000; // server wait time in miliseconds
-const extraMoveTime = 3; // extra time in seconds
+let waitTime = 2000; // server wait time in miliseconds
+let extraMoveTime = 3; // extra time in seconds
+let startingTime = 300; // starting time per player in seconds
 
 
 // const Chess = require('chess.js').Chess;
@@ -22,7 +23,7 @@ let bots: ConnectedBot[] = [];
 let superUsers: Set<String> = new Set();
 
 interface ICurrentGame {
-  state: 'INPROGRESS' | 'PAUSED' | 'STOPPED',
+  state: 'INPROGRESS' | 'PAUSED' | 'STOPPED' | 'GAMEOVER',
   white: string,
   timeLeftWhite: number,
   whiteTurnStartTime?: Date,
@@ -60,6 +61,11 @@ const io = new Server(server, {cors: {origin: "*"}});
 // Serve the React static files after build
 app.use(express.static("../client/build"));
 
+// All other unmatched requests will return the React app
+app.get("/", (req, res) => {
+  res.sendFile(path.resolve(__dirname, "client", "build", "index.html"));
+});
+
 io.on("connection", async (socket) => {
   console.log('Someone connected');
   socket.on('REGISTER_BOT', (data) => {
@@ -82,15 +88,12 @@ io.on("connection", async (socket) => {
   });
 
   socket.on('REGISTER_DASHBOARD', (data) => {
-    console.log('Data register dashboard', data, typeof data);
-    console.log('DASHBOARD_KEY', process.env.DASHBOARD_KEY, typeof process.env.DASHBOARD_KEY);
     const dashboardKey = process.env.DASHBOARD_KEY;
     if(data !== dashboardKey){
-      console.log("WRONG!");
       return;
     }
     superUsers.add(socket.id);
-  })
+  });
 
   socket.on('disconnect', (data) => {
     for( var i=0, len=bots.length; i<len; ++i ){
@@ -101,11 +104,21 @@ io.on("connection", async (socket) => {
           break;
       }
     }
+    io.emit("CURRENT_BOT_LIST", bots);
   });
 
   socket.on("REQUEST_BOT_LIST", () => {
     io.emit("CURRENT_BOT_LIST", bots);
   });
+
+  socket.on("REQUEST_SERVER_SETTINGS", () => {
+    const serverSettings = {
+      serverSpeed: waitTime,
+      addedTimePerMove: extraMoveTime,
+      startingTime: startingTime,
+    }
+    io.emit("CURRENT_SERVER_SETTINGS", serverSettings);
+  })
 
   interface BotMoveData {
     botId: string,
@@ -118,19 +131,25 @@ io.on("connection", async (socket) => {
     }
     currentGame.moveRequestedTo = '';
     console.log('BOT_MOVE DATA:', move);
-    safeGameMutatue(move);
+    const validMove = safeGameMutatue(move);
+    const currentBot = bots.find((bot) => bot.customBotId === botId );
+    if(validMove){
+      io.to(currentBot.clientId).emit("MOVE_CONFIRMED", chess.fen());
+    }
+    else {
+      currentGame.moveRequestedTo = botId;
+      io.to(currentBot.clientId).emit("MOVE_DENIED", chess.fen());
+    }
   });
 
   socket.onAny((...args) => console.log('[incomming]', ...args));
 
   socket.on("PLAYER_MOVE", (move: Move | ShortMove) => {
     const turnColor = chess.turn();
-    console.log('Turn Color: ', turnColor);
     if((turnColor === 'w' && currentGame.white !== 'player') || (turnColor === 'b' && currentGame.black !== 'player')){
       console.log('Player tried to make a move but its not their turn');
       return;
     }
-    console.log('PLAYER_MOVE DATA:', move)
     safeGameMutatue(move);
   });
 
@@ -138,11 +157,9 @@ io.on("connection", async (socket) => {
     white: string,
     black: string,
   }
+
   socket.on("GAME_START", (data: GameStartData) => {
     if(process.env.NODE_ENV === 'production' && !superUsers.has(socket.id)){
-      console.log('something went wrong :(');
-      console.log('Super users', superUsers);
-      console.log('SocketID', socket.id);
       return;
     }
     const { white, black } = data;
@@ -150,9 +167,9 @@ io.on("connection", async (socket) => {
       state: 'INPROGRESS',
       white: white,
       black: black,
-      timeLeftWhite: 300,
+      timeLeftWhite: startingTime,
       whiteTurnStartTime: new Date(),
-      timeLeftBlack: 300,
+      timeLeftBlack: startingTime,
     }
     if(white !== 'player') {
       io.emit("YOUR_MOVE", chess.fen());
@@ -162,49 +179,94 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("GAME_PAUSE", () => {
+    if(process.env.NODE_ENV === 'production' && !superUsers.has(socket.id)){
+      return;
+    }
+  });
 
-  })
+  socket.on("GAME_CONTINUE", () => {
+    if(process.env.NODE_ENV === 'production' && !superUsers.has(socket.id)){
+      return;
+    }
+  });
 
   socket.on("GAME_STOP", (data) => {
+    if(process.env.NODE_ENV === 'production' && !superUsers.has(socket.id)){
+      return;
+    }
     currentGame.state = 'STOPPED';
     io.emit("GAME_STOPPED");
-  })
+  });
 
   socket.on("GAME_RESET", (data) => {
+    if(process.env.NODE_ENV === 'production' && !superUsers.has(socket.id)){
+      return;
+    }
     console.log('game reset');
     chess.reset();
     currentGame.timeLeftWhite = 300;
     currentGame.timeLeftBlack = 300;
     sendNewBoardState();
+  });
+
+  socket.on("TIMEDOUT", (loser: 'WHITE' | 'BLACK') => {
+    gameOver((loser === 'WHITE' ? 'BLACK' : 'WHITE'));
+  });
+
+  socket.on("UPDATE_TIME_TO_ADD", (seconds: number) => {
+    extraMoveTime = seconds;
+  });
+
+  socket.on("UPDATE_WAIT_TIME", (miliseconds: number) => {
+    waitTime = miliseconds;
+  });
+
+  socket.on("EARLY_WIN", (color: 'WHITE' | 'BLACK') => {
+    if(process.env.NODE_ENV === 'production' && !superUsers.has(socket.id)){
+      return;
+    }
+    if(currentGame.state === 'GAMEOVER'){
+      return;
+    }
+    console.log('early win');
+    gameOver(color, 0.75);
   })
-  
-  
 });
 
-// All other unmatched requests will return the React app
-app.get("/", (req, res) => {
-  res.sendFile(path.resolve(__dirname, "client", "build", "index.html"));
-});
+
 
 const safeGameMutatue = (move: Move | ShortMove | null) => {
-  if (move === null) return; // if null was given, don't update the board
+  if (move === null) return false; // if null was given, don't update the board
   if(chess.turn() === 'w'){
-    const currentTime = new Date();
-    const timeSpentByWhite = Math.round((currentTime.getTime() - currentGame.whiteTurnStartTime.getTime()) / 1000);
-    const currentTimeWhite = currentGame.timeLeftWhite;
-    currentGame.timeLeftWhite = currentTimeWhite - timeSpentByWhite + extraMoveTime;
-    currentGame.blackTurnStartTime = currentTime;
+    try {
+      const currentTime = new Date();
+      const timeSpentByWhite = Math.round((currentTime.getTime() - currentGame.whiteTurnStartTime.getTime()) / 1000);
+      const currentTimeWhite = currentGame.timeLeftWhite;
+      currentGame.timeLeftWhite = currentTimeWhite - timeSpentByWhite + extraMoveTime;
+      currentGame.blackTurnStartTime = currentTime;
+    } catch (error) {
+      return false;
+    }
   }
   if(chess.turn() === 'b'){
-    const currentTime = new Date();
-    const timeSpentByBlack = Math.round((currentTime.getTime() - currentGame.blackTurnStartTime.getTime()) / 1000);
-    const currentTimeBlack = currentGame.timeLeftBlack;
-    currentGame.timeLeftBlack = currentTimeBlack - timeSpentByBlack + extraMoveTime;
-    currentGame.whiteTurnStartTime = currentTime;
+    try {
+      const currentTime = new Date();
+      const timeSpentByBlack = Math.round((currentTime.getTime() - currentGame.blackTurnStartTime.getTime()) / 1000);
+      const currentTimeBlack = currentGame.timeLeftBlack;
+      currentGame.timeLeftBlack = currentTimeBlack - timeSpentByBlack + extraMoveTime;
+      currentGame.whiteTurnStartTime = currentTime;
+    } catch (error) {
+      return false;
+    }
   }
-  chess.move(move);
-  sendNewBoardState()
+  const newMove = chess.move(move);
+  console.log('New Move: ', newMove);
+  if(newMove === null){
+    return false;
+  }
+  sendNewBoardState();
   nextTurn();
+  return true;
 }
 
 const sendNewBoardState = () => {
@@ -218,40 +280,17 @@ const sendNewBoardState = () => {
 }
 
 const nextTurn = () => {
+  if(currentGame.state !== 'INPROGRESS'){
+    return;
+  }
   const turnColor = chess.turn();
   if(chess.game_over()){
     if(chess.in_threefold_repetition() || chess.in_draw || chess.in_stalemate){
-      currentGame.winState = "DRAW";
+      gameOver('DRAW');
     }
     if(chess.in_checkmate()){
-      (turnColor === 'w' ? currentGame.winState = 'BLACK' : currentGame.winState = 'WHITE');
+      (turnColor === 'w' ? gameOver('BLACK') : gameOver('WHITE'));
     }
-    let updatedElo;
-    if(currentGame.white !== 'player' && currentGame.black !== 'player'){
-      const whiteBotIndex = bots.findIndex(bot => bot.customBotId === currentGame.white);
-      const blackBotIndex = bots.findIndex(bot => bot.customBotId === currentGame.black);
-      const expectedScoreWhite = elo.getExpected(bots[whiteBotIndex].elo, bots[blackBotIndex].elo);
-      const expectedScoreBlack = elo.getExpected(bots[blackBotIndex].elo, bots[whiteBotIndex].elo);
-      const currentEloWhite = bots[whiteBotIndex].elo;
-      const whiteWinFactor = (currentGame.winState === 'WHITE' ? 1 : currentGame.winState === 'DRAW' ? 0.5 : 0);
-      const newWhiteElo = elo.updateRating(expectedScoreWhite, whiteWinFactor, bots[whiteBotIndex].elo)
-      bots[whiteBotIndex].elo = newWhiteElo;
-      const currentEloBlack = bots[blackBotIndex].elo;
-      const blackWinFactor = (currentGame.winState === 'BLACK' ? 1 : currentGame.winState === 'DRAW' ? 0.5 : 0);
-      const newBlackElo = elo.updateRating(expectedScoreBlack, blackWinFactor, bots[blackBotIndex].elo);
-      bots[blackBotIndex].elo = newBlackElo;
-      updatedElo = {
-        currentEloWhite: currentEloWhite,
-        currentEloBlack: currentEloBlack,
-        eloPointsWhite: newWhiteElo - currentEloWhite,
-        eloPointsBlack: newBlackElo - currentEloBlack,
-      }
-    }
-    io.emit("GAME_OVER", {currentGame: currentGame, updatedElo: updatedElo});
-    io.emit("CURRENT_BOT_LIST", bots);
-    return;
-  }
-  if(currentGame.state === 'STOPPED'){
     return;
   }
   if((turnColor === 'w' && currentGame.white !== 'player') || (turnColor === 'b' && currentGame.black !== 'player')){
@@ -271,4 +310,65 @@ const nextTurn = () => {
     return;
   }
   io.emit("PLAYER_TURN");
+}
+
+const gameOver = (winner: 'WHITE' | 'BLACK' | 'DRAW', factor?: number) => {
+  let gameOverState = {
+    winState: winner,
+    currentEloWhite: 0,
+    currentEloBlack: 0,
+    newEloWhite: 0,
+    newEloBlack: 0,
+    eloPointsChangedWhite: 0,
+    eloPointsChangedBlack: 0,
+  }
+  const whiteBotIndex = bots.findIndex(bot => bot.customBotId === currentGame.white);
+  const blackBotIndex = bots.findIndex(bot => bot.customBotId === currentGame.black);
+  if(currentGame.white === '' || currentGame.black === ''){
+    return;
+  }
+  if(currentGame.white !== 'player' && currentGame.black !== 'player'){
+    const currentEloWhite = bots[whiteBotIndex].elo;
+    const currentEloBlack = bots[blackBotIndex].elo;
+    const expectedScoreWhite = elo.getExpected(currentEloWhite, currentEloBlack);
+    const expectedScoreBlack = elo.getExpected(currentEloBlack, currentEloWhite);
+    let whiteWinFactor;
+    let blackWinFactor;
+    if(winner == 'DRAW'){
+      whiteWinFactor = 0.5;
+      blackWinFactor = 0.5;
+    }
+    if(winner === 'WHITE'){
+      whiteWinFactor = 1;
+      blackWinFactor = 0;
+      if(factor){
+        whiteWinFactor = factor;
+        blackWinFactor = 1 - factor;
+      }
+    }
+    if(winner === 'BLACK'){
+      whiteWinFactor = 0;
+      blackWinFactor = 1;
+      if(factor){
+        whiteWinFactor = 1 - factor;
+        blackWinFactor = factor;
+      }
+    }
+    const newWhiteElo = elo.updateRating(expectedScoreWhite, whiteWinFactor, currentEloWhite)
+    bots[whiteBotIndex].elo = newWhiteElo;
+    const newBlackElo = elo.updateRating(expectedScoreBlack, blackWinFactor, currentEloBlack);
+    bots[blackBotIndex].elo = newBlackElo;
+    gameOverState = {
+      winState: gameOverState.winState,
+      currentEloWhite: currentEloWhite,
+      currentEloBlack: currentEloBlack,
+      newEloWhite: newWhiteElo,
+      newEloBlack: newBlackElo,
+      eloPointsChangedWhite: newWhiteElo - currentEloWhite,
+      eloPointsChangedBlack: newBlackElo - currentEloBlack,
+    }
+  }
+  io.emit("GAME_OVER", {gameOverState: gameOverState});
+  io.emit("CURRENT_BOT_LIST", bots);
+  currentGame.state = 'GAMEOVER';
 }

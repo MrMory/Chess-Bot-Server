@@ -4,9 +4,12 @@ import { ChessInstance, Move, Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Box, Button, Container, FormControl, Grid, InputLabel, List, ListItem, ListItemIcon, ListItemText, ListSubheader, MenuItem, Paper, Select, SelectChangeEvent, Typography } from '@mui/material';
-import Countdown from './components/countdown';
-import { Link, LinkOff } from '@mui/icons-material';
+import { Box, Button, Container, Grid, List, ListItem, ListItemIcon, ListItemText, ListSubheader, Paper, SelectChangeEvent, Slider } from '@mui/material';
+import { Link, LinkOff, Speed, AddAlarm } from '@mui/icons-material';
+import { ConnectedBot, GameOverState } from './types';
+import PlayerBar from './components/playerBar';
+import VictoryPopup from './components/victoryPopup';
+import { isNumberObject } from 'util/types';
 
 const ChessReq: any = require('chess.js');
 const Chess: ChessInstance = new ChessReq();
@@ -14,12 +17,6 @@ const Chess: ChessInstance = new ChessReq();
 const ENDPOINT = "http://localhost:5001";
 
 type GAMESTATE = 'START' | 'STOP' | 'PLAYING' | 'RESET' | 'GAME_OVER';
-
-interface ConnectedBot {
-  customBotId: string,
-  clientId: string,
-  elo: number,
-}
 
 interface NewBoardStateData {
   boardState: string, // FEN format of current board state
@@ -38,9 +35,9 @@ const App = () => {
   const [ currentTurn, setCurrentTurn ] = useState<'w' | 'b' | 'NONE'>();
   const [ whiteTime, setWhiteTime ] = useState<number>(5*60);
   const [ blackTime, setBlackTime ] = useState<number>(5*60);
-  const [ gameOverState, setGameOverState ] = useState();
-
-  // THIS IS THE MOST AWESOME COMMENT 1337!!
+  const [ gameOverState, setGameOverState ] = useState<GameOverState>();
+  const [ serverSpeed, setServerSpeed ] = useState<number>(0);
+  const [ extraTime, setExtraTime ] = useState<number>(0);
   
   const socket = useRef<Socket>();
 
@@ -51,7 +48,7 @@ const App = () => {
         return;
       }
       const cachedKey = window.localStorage.getItem('dashboardKey');
-      const key = cachedKey || window.prompt('Please fill in you access key');
+      const key = cachedKey || window.prompt('The admin can fill in a access key. Else just press cancel.');
       socket.current?.emit('REGISTER_DASHBOARD', key);
       window.localStorage.setItem('dashboardKey', key || '');
     });
@@ -74,14 +71,18 @@ const App = () => {
     });
     socket.current.on("GAME_OVER", (data) => {
       setGameState('GAME_OVER');
+      const { gameOverState } = data;
+      console.log("Game Over:", gameOverState);
+      setGameOverState(gameOverState);
     });
+    socket.current.on("CURRENT_SERVER_SETTINGS", settings => {
+      setServerSpeed(settings.serverSpeed);
+      setExtraTime(settings.addedTimePerMove);
+    })
     return () => { socket.current?.disconnect() };
-  }, [])
+  }, []);
 
   useEffect(() => {
-    if(!socket.current){
-      
-    }
     socket.current?.emit("REQUEST_BOT_LIST");
     if(newMove !== null && gameState === 'PLAYING' && (white === 'player' || black === 'player')){
       socket.current?.emit("PLAYER_MOVE", newMove);
@@ -98,6 +99,10 @@ const App = () => {
       socket.current?.emit("GAME_RESET");
     }
   }, [black, gameState, white, newMove]);
+
+  useEffect(() => {
+    socket.current?.emit("REQUEST_SERVER_SETTINGS");
+  }, []);
 
   const onDrop = useCallback((sourceSquare: Square, targetSquare: Square) => {
     let move = game.move({
@@ -139,55 +144,45 @@ const App = () => {
     setGameState('RESET');
   }, [setGameState, setNewMove]);
 
+  const changeAddedTime = useCallback((event: Event, value: number | Array<number>, activeThumb: number) => {
+    if(!Array.isArray(value) && Number.isInteger(value)){
+      setExtraTime(value);
+    }
+  }, []);
+
+  const updateAddedTime = useCallback((event: React.SyntheticEvent | Event, value: number | Array<number>) => {
+    socket.current?.emit("UPDATE_TIME_TO_ADD", value);
+  }, []);
+
+  const changeSpeed = useCallback((event: Event, value: number | Array<number>, activeThumb: number) => {
+    if(!Array.isArray(value) && Number.isInteger(value)){
+      setServerSpeed(value);
+    }
+  }, []);
+
+  const updateSpeed = useCallback((event: React.SyntheticEvent | Event, value: number | Array<number>) => {
+    socket.current?.emit("UPDATE_WAIT_TIME", value);
+  }, []);
+  
+
   return (
     <div className="App">
       <header className="App-header">
         <Grid container justifyContent="center" rowSpacing={5}>
+          {gameOverState && <VictoryPopup gameOverState={gameOverState} setGameOverState={setGameOverState} white={white} black={black}/>}
           <Grid item xs="auto">
             <Container>
-              <Box sx={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
-                <FormControl size="small" sx={{minWidth: '150px', textAlign: 'left'}}>
-                  <InputLabel id="demo-simple-select-label">Black</InputLabel>
-                  <Select
-                    labelId="demo-simple-select-label"
-                    id="demo-simple-select"
-                    value={black}
-                    label="Black"
-                    onChange={changeBlack}
-                  >
-                    <MenuItem key='black-player' value={`player`}>Player</MenuItem>
-                    {currentBotList?.map((bot) => (
-                      <MenuItem key={`black-${bot.customBotId}`} value={bot.customBotId}>{bot.customBotId}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <Typography variant="h6" component="div"><Countdown time={blackTime} isCounting={currentTurn === 'b' && gameState === 'PLAYING'}/></Typography>
+              <PlayerBar color='BLACK' socket={socket} selected={black} onChange={changeBlack} list={currentBotList} time={blackTime} isCounting={currentTurn === 'b' && gameState === 'PLAYING'}/>
+              <Box sx={{marginBottom: '10px'}}>
+                <Chessboard 
+                  position={game.fen()}
+                  onPieceDrop={onDrop}
+                  arePiecesDraggable={(white === 'player' || black === 'player') ? true : false}
+                  customLightSquareStyle={{backgroundColor: '#FF5100'}}
+                  customDarkSquareStyle={{backgroundColor: '#BF3D00'}}
+                />
               </Box>
-              <Chessboard 
-                position={game.fen()}
-                onPieceDrop={onDrop}
-                arePiecesDraggable={(white === 'player' || black === 'player') ? true : false}
-                customLightSquareStyle={{backgroundColor: '#FF5100'}}
-                customDarkSquareStyle={{backgroundColor: '#BF3D00'}}
-              />
-              <Box sx={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px'}}>
-                <FormControl size="small" sx={{minWidth: '150px', textAlign: 'left'}}>
-                  <InputLabel id="demo-simple-select-label">White</InputLabel>
-                  <Select
-                    labelId="demo-simple-select-label"
-                    id="demo-simple-select"
-                    value={white}
-                    label="White"
-                    onChange={changeWhite}
-                  >
-                    <MenuItem key='white-player' value={`player`}>Player</MenuItem>
-                    {currentBotList?.map((bot) => (
-                      <MenuItem key={`white-${bot.customBotId}`} value={bot.customBotId}>{bot.customBotId}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <Typography variant="h6" component="div"><Countdown time={whiteTime} isCounting={currentTurn === 'w' && gameState === 'PLAYING'}/></Typography>
-              </Box>
+              <PlayerBar color='WHITE' socket={socket} selected={white} onChange={changeWhite} list={currentBotList} time={whiteTime} isCounting={currentTurn === 'w' && gameState === 'PLAYING'}/>
             </Container>
           </Grid>
           <Grid item xs={3}>
@@ -195,6 +190,48 @@ const App = () => {
                 <Button variant='outlined' onClick={handleStart}>START</Button>
                 <Button variant='outlined' onClick={handleStop}>STOP</Button>
                 <Button variant='outlined' onClick={resetGame}>RESET</Button>
+            </Box>
+            <Box>
+              <Grid container spacing={1}>
+                <Grid item>
+                  <AddAlarm/>
+                </Grid>
+                <Grid item xs>
+                  <Slider
+                    size="small"
+                    value={extraTime}
+                    aria-label="Small"
+                    valueLabelDisplay="auto"
+                    step={1}
+                    marks
+                    min={0}
+                    max={10}
+                    onChange={changeAddedTime}
+                    onChangeCommitted={updateAddedTime}
+                    valueLabelFormat={value => `${value} s`}
+                  />
+                </Grid>
+              </Grid>
+              <Grid container spacing={1}>
+                <Grid item>
+                  <Speed/>
+                </Grid>
+                <Grid item xs>
+                  <Slider
+                    size="small"
+                    value={serverSpeed}
+                    aria-label="Small"
+                    valueLabelDisplay="auto"
+                    step={100}
+                    marks
+                    min={0}
+                    max={3000}
+                    onChange={changeSpeed}
+                    onChangeCommitted={updateSpeed}
+                    valueLabelFormat={value => `${value} ms`}
+                  />
+                </Grid>
+              </Grid>
             </Box>
             <Paper>
               <List
@@ -210,9 +247,9 @@ const App = () => {
                 <li key={'bot-list'}>
                   <ul>
                     <ListSubheader>CONNECTED BOTS</ListSubheader>
-                    {currentBotList?.map((bot) => (
+                    {currentBotList?.sort((a, b) => b.elo - a.elo).map((bot) => (
                       <ListItem key={`bot-${bot.customBotId}`} sx={{display: 'grid', gridTemplateColumns: 'auto 1fr auto'}}>
-                        <ListItemIcon><Link/></ListItemIcon>
+                        <ListItemIcon>{bot.clientId === '' ? <LinkOff/> : <Link/>}</ListItemIcon>
                         <ListItemText primary={bot.customBotId} />
                         <ListItemText primary={bot.elo} />
                       </ListItem>
